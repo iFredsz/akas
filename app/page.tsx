@@ -15,7 +15,7 @@ export default function Home() {
 
         <div className="relative z-10 text-center p-4">
           <h1 className="text-5xl md:text-7xl font-extrabold drop-shadow-xl">Movie18</h1>
-          <p className="text-gray-300 mt-3 text-lg md:text-xl">Nonton gratis tanpa iklan</p>
+          <p className="text-gray-300 mt-3 text-lg md:text-xl">Nonton puas tanpa iklan</p>
 
           {/* Search */}
           <div className="mt-6 flex items-center justify-center gap-2 w-full px-4">

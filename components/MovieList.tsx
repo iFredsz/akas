@@ -29,6 +29,29 @@ interface PaymentResponse {
   error?: string;
 }
 
+// Fungsi untuk mendapatkan atau membuat user ID unik
+function getUserId(): string {
+  const cookieName = "movie_user_id";
+  
+  // Cek apakah sudah ada cookie
+  const cookies = document.cookie.split("; ");
+  const existingCookie = cookies.find(c => c.startsWith(cookieName + "="));
+  
+  if (existingCookie) {
+    return existingCookie.split("=")[1];
+  }
+  
+  // Buat user ID baru jika belum ada
+  const newUserId = "user_" + Math.random().toString(36).substring(2, 15) + Date.now();
+  
+  // Set cookie yang expire dalam 10 tahun
+  const expires = new Date();
+  expires.setFullYear(expires.getFullYear() + 10);
+  document.cookie = `${cookieName}=${newUserId}; expires=${expires.toUTCString()}; path=/; SameSite=Strict`;
+  
+  return newUserId;
+}
+
 export default function MovieList({ search }: { search?: string }) {
   const [movies, setMovies] = useState<Movie[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,6 +60,8 @@ export default function MovieList({ search }: { search?: string }) {
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 12;
+  // Inisialisasi userId langsung tanpa useState untuk menghindari cascading renders
+  const userId = typeof window !== 'undefined' ? getUserId() : '';
 
   useEffect(() => {
     const q = query(collection(db, "movies"), orderBy("createdAt", "desc"));
@@ -50,7 +75,10 @@ export default function MovieList({ search }: { search?: string }) {
 
   const handleClick = async (movie: Movie) => {
     try {
-      const res = await fetch(`/api/transactiondetail?order_id=${movie.id}&amount=${movie.price}`);
+      // Buat order_id unik untuk setiap user: movie.id + userId
+      const uniqueOrderId = `${movie.id}_${userId}`;
+      
+      const res = await fetch(`/api/transactiondetail?order_id=${uniqueOrderId}&amount=${movie.price}`);
       const data = await res.json() as TransactionResponse;
 
       setSelected(movie);
@@ -70,9 +98,12 @@ export default function MovieList({ search }: { search?: string }) {
         return;
       }
 
+      // Buat order_id unik untuk setiap user
+      const uniqueOrderId = `${movie.id}_${userId}`;
+
       const res = await fetch("/api/pay", {
         method: "POST",
-        body: JSON.stringify({ order_id: movie.id, amount: movie.price }),
+        body: JSON.stringify({ order_id: uniqueOrderId, amount: movie.price }),
       });
 
       if (!res.ok) {
@@ -91,7 +122,7 @@ export default function MovieList({ search }: { search?: string }) {
 
       // polling status
       const interval = setInterval(async () => {
-        const statusRes = await fetch(`/api/transactiondetail?order_id=${movie.id}&amount=${movie.price}`);
+        const statusRes = await fetch(`/api/transactiondetail?order_id=${uniqueOrderId}&amount=${movie.price}`);
         const statusData = await statusRes.json() as TransactionResponse;
 
         if (statusData.transaction?.status === "completed") {

@@ -269,7 +269,10 @@ export default function MovieList({ search }: { search?: string }) {
             <h3 className="text-white font-semibold text-lg mb-2">{selected.title}</h3>
 
             {selectedStatus !== "completed" && !paymentUrl && (
-              <p className="text-white mb-4">Harga: Rp{selected.price}</p>
+             <p className="text-white mb-4">
+  Cukup sekali bayar Rp {selected.price}, tonton sepuasnya tanpa iklan!
+</p>
+
             )}
 
             <button

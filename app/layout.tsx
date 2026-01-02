@@ -1,33 +1,42 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+import Navbar from "@/components/Navbar";
+import WhatsappButton from "@/components/global/WhatsappButton";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
 export const metadata: Metadata = {
-  title: "Movie18 - Nonton Gratis Tanpa Iklan",
-  description: "Nonton film gratis tanpa iklan di Movie18. Koleksi film terbaru dan terlengkap untuk hiburan Anda.",
+  title: "CV AKAS BROTHER CONSULTANT",
+  description: "Konsultan terbaik di Lampung",
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+    <html lang="id">
+      <body className="bg-black text-white">
+        <Navbar />
         {children}
+
+        {/* Floating WhatsApp Button */}
+        <WhatsappButton />
+
+        {/* Toast Notifications */}
+        <ToastContainer
+          position="top-right"
+          autoClose={3000}
+          hideProgressBar={false}
+          newestOnTop={false}
+          closeOnClick
+          rtl={false}
+          pauseOnFocusLoss
+          draggable
+          pauseOnHover
+          theme="light"
+        />
       </body>
     </html>
   );

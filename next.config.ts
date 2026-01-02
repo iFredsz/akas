@@ -1,14 +1,20 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  compiler: {
+    removeConsole:
+      process.env.NODE_ENV === 'production'
+        ? { exclude: ['error'] } 
+        : false,
+  },
   images: {
     remotePatterns: [
       {
         protocol: "https",
-        hostname: "**",   // izinkan semua domain https
+        hostname: "**",
       },
       {
         protocol: "http",
-        hostname: "**",   // izinkan semua domain http
+        hostname: "**",
       },
     ],
   },

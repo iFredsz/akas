@@ -1,358 +1,865 @@
 "use client";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { createBrowserClient } from "@supabase/ssr";
+import { HiEye, HiEyeOff, HiShieldCheck } from "react-icons/hi";
+import { ToastContainer, toast } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
-import { useEffect, useState, ChangeEvent } from "react";
-import {
-  collection,
-  addDoc,
-  onSnapshot,
-  deleteDoc,
-  updateDoc,
-  doc,
-  getDocs,
-  query,
-  where,
-  DocumentData,
-  QuerySnapshot,
-  serverTimestamp,
-  FieldValue,
-} from "firebase/firestore";
-import { auth, provider, signInWithPopup, signOut, db } from "@/lib/firebase";
-import { User } from "firebase/auth";
-import { toast, Toaster } from "sonner";
-
-interface Movie {
+interface User {
   id: string;
-  title: string;
-  image: string;
-  minute: number;
-  price: number;
-  drive_url: string;
-  createdAt: { seconds: number; nanoseconds: number } | null;
-}
-
-interface MovieData {
-  title: string;
-  image: string;
-  minute: number;
-  price: number;
-  drive_url: string;
-  createdAt?: FieldValue;
+  email: string | null;
+  role: string | null;
+  full_name: string | null;
+  position: string | null;
+  birth_date: string | null;
+  address: string | null;
 }
 
 export default function AdminPage() {
-  const [user, setUser] = useState<User | null>(null);
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const supabase = createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
 
-  const [movies, setMovies] = useState<Movie[]>([]);
-  const [loadingMovies, setLoadingMovies] = useState(true);
+  const [users, setUsers] = useState<User[]>([]);
+  const [adminName, setAdminName] = useState<string>("Admin");
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null);
 
-  const [id, setId] = useState("");
-  const [title, setTitle] = useState("");
-  const [image, setImage] = useState("");
-  const [minute, setMinute] = useState<number | "">("");
-  const [price, setPrice] = useState<number | "">("");
-  const [driveUrl, setDriveUrl] = useState("");
+  // pagination
+  const perPage = 10;
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [total, setTotal] = useState<number>(0);
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const currentPageRef = useRef<number>(currentPage);
 
-  const [isEdit, setIsEdit] = useState(false);
+  // search
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const searchRef = useRef<string>(searchQuery);
+  const searchDebounceRef = useRef<number | null>(null);
 
-  const [search, setSearch] = useState("");
-  const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 5;
+  // Form tambah karyawan
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newFullName, setNewFullName] = useState("");
+  const [newPosition, setNewPosition] = useState("");
+  const [newBirthDate, setNewBirthDate] = useState("");
+  const [newAddress, setNewAddress] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
-  // cek auth & admin
-  useEffect(() => {
-    const unsub = auth.onAuthStateChanged(async (u) => {
-      setUser(u);
-      if (u?.email) {
-        const q = query(collection(db, "admins"), where("email", "==", u.email));
-        const snap: QuerySnapshot<DocumentData> = await getDocs(q);
-        setIsAdmin(!snap.empty);
-      } else {
-        setIsAdmin(null);
+  // Edit state
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editData, setEditData] = useState<Partial<User>>({});
+
+  // Loading state
+  const [addingUser, setAddingUser] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [savingEditId, setSavingEditId] = useState<string | null>(null);
+
+  // Delete confirmation modal
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<User | null>(null);
+  
+  // Role change confirmation modal
+  const [showRoleChangeConfirm, setShowRoleChangeConfirm] = useState<{
+    user: User;
+    newRole: string;
+  } | null>(null);
+
+  const isSuperAdmin = currentUserRole === 'super_admin';
+
+  // Fetch users
+  const fetchUsers = useCallback(
+    async (page = 1, query = "") => {
+      try {
+        const from = (page - 1) * perPage;
+        const to = from + perPage - 1;
+
+        let builder = supabase
+          .from("users")
+          .select("*", { count: "exact" })
+          .order("full_name", { ascending: true })
+          .range(from, to);
+
+        if (query.trim()) {
+          const q = query.trim();
+          builder = builder.or(`full_name.ilike.%${q}%,email.ilike.%${q}%,position.ilike.%${q}%`);
+        }
+
+        const res = await builder;
+
+        if (res.error) {
+          console.error("fetchUsers error:", res.error);
+          toast.error("Gagal memuat data pengguna");
+          setUsers([]);
+          setTotal(0);
+          return;
+        }
+        
+        setUsers(res.data || []);
+        setTotal(res.count ?? 0);
+
+        const newTotalPages = Math.max(1, Math.ceil((res.count ?? 0) / perPage));
+        if (currentPageRef.current > newTotalPages) {
+          setCurrentPage(newTotalPages);
+          currentPageRef.current = newTotalPages;
+        }
+      } catch (err) {
+        console.error("fetchUsers error:", err);
+        toast.error("Terjadi kesalahan saat memuat data");
+        setUsers([]);
+        setTotal(0);
       }
-    });
-    return () => unsub();
-  }, []);
+    },
+    [supabase]
+  );
 
-  // load movies
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "movies"), (snap) => {
-      const data: Movie[] = snap.docs
-        .map((d) => ({
-          id: d.id,
-          title: d.data().title,
-          image: d.data().image,
-          minute: d.data().minute,
-          price: d.data().price,
-          drive_url: d.data().drive_url,
-          createdAt: d.data().createdAt || null,
-        }))
-        .sort((a, b) => {
-          if (!a.createdAt) return 1;
-          if (!b.createdAt) return -1;
-          return b.createdAt.seconds - a.createdAt.seconds; // terbaru di atas
-        });
-
-      setMovies(data);
-      setLoadingMovies(false);
-    });
-    return () => unsub();
-  }, []);
-
-  const handleLogin = async () => {
+  // Fetch current user
+  const fetchCurrentUser = useCallback(async () => {
     try {
-      await signInWithPopup(auth, provider);
-    } catch (err: unknown) {
-      if (err instanceof Error) toast.error(`Login gagal: ${err.message}`);
-      else toast.error("Login gagal: unknown error");
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setCurrentUserId(user.id);
+        const { data: userData } = await supabase
+          .from("users")
+          .select("*")
+          .eq("id", user.id)
+          .single();
+        if (userData) {
+          setAdminName(userData.full_name || "Admin");
+          setCurrentUserRole(userData.role);
+        }
+      }
+    } catch (err) {
+      console.error("fetchCurrentUser error:", err);
+    }
+  }, [supabase]);
+
+  // Update refs
+  useEffect(() => {
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
+
+  useEffect(() => {
+    searchRef.current = searchQuery;
+  }, [searchQuery]);
+
+  // Initial fetch
+  useEffect(() => {
+    fetchCurrentUser();
+    fetchUsers(currentPageRef.current, searchRef.current);
+  }, [fetchCurrentUser, fetchUsers]);
+
+  // Realtime setup - dengan update nama admin
+  useEffect(() => {
+    const channel = supabase
+      .channel('users-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'users'
+        },
+        () => {
+          // Refresh data when any change happens
+          fetchUsers(currentPageRef.current, searchRef.current);
+          // Update nama admin juga
+          fetchCurrentUser();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase, fetchUsers, fetchCurrentUser]);
+
+  // Debounced search
+  useEffect(() => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+    
+    setCurrentPage(1);
+    currentPageRef.current = 1;
+
+    searchDebounceRef.current = window.setTimeout(() => {
+      fetchUsers(1, searchQuery);
+    }, 300);
+
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+      }
+    };
+  }, [searchQuery, fetchUsers]);
+
+  // Tambah karyawan
+  const addKaryawan = async () => {
+    if (!newEmail || !newPassword || !newFullName) {
+      toast.error("Isi semua field wajib!");
+      return;
+    }
+
+    setAddingUser(true);
+    try {
+      const res = await fetch("/api/admin/add-karyawan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: newEmail,
+          password: newPassword,
+          full_name: newFullName,
+          position: newPosition,
+          birth_date: newBirthDate,
+          address: newAddress,
+        }),
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        toast.error(data.error || "Gagal menambah karyawan");
+        return;
+      }
+      
+      toast.success("Berhasil menambah karyawan!");
+      resetForm();
+      
+    } catch (err) {
+      console.error("addKaryawan error:", err);
+      toast.error("Terjadi kesalahan");
+    } finally {
+      setAddingUser(false);
     }
   };
 
   const resetForm = () => {
-    setId("");
-    setTitle("");
-    setImage("");
-    setMinute("");
-    setPrice("");
-    setDriveUrl("");
-    setIsEdit(false);
+    setNewEmail("");
+    setNewPassword("");
+    setNewFullName("");
+    setNewPosition("");
+    setNewBirthDate("");
+    setNewAddress("");
+    setShowPassword(false);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Open delete confirmation modal
+  const confirmDelete = (user: User) => {
+    // Cek jika user mencoba menghapus dirinya sendiri
+    if (user.id === currentUserId) {
+      toast.error("Anda tidak dapat menghapus akun Anda sendiri");
+      return;
+    }
+
+    // Cek jika user yang akan dihapus adalah admin atau super admin
+    if (user.role === 'admin' || user.role === 'super_admin') {
+      toast.error("Tidak dapat menghapus user dengan role Admin/Super Admin. Hubungi Super Admin untuk mengubah role terlebih dahulu.");
+      return;
+    }
+
+    setShowDeleteConfirm(user);
+  };
+
+  // Hapus user
+  const deleteUser = async (user: User) => {
+    if (!user.email) {
+      toast.error("User tidak punya email");
+      return;
+    }
+
+    setShowDeleteConfirm(null);
+    setDeletingId(user.id);
+
     try {
-      const movieData: MovieData = {
-        title,
-        image,
-        minute: Number(minute),
-        price: Number(price),
-        drive_url: driveUrl,
-      };
-
-      if (!isEdit) movieData.createdAt = serverTimestamp(); // tambah createdAt otomatis
-
-      if (isEdit) {
-        await updateDoc(doc(db, "movies", id), {
-          title: movieData.title,
-          image: movieData.image,
-          minute: movieData.minute,
-          price: movieData.price,
-          drive_url: movieData.drive_url,
-        });
-        toast.success("Film diperbarui!");
-      } else {
-        await addDoc(collection(db, "movies"), movieData);
-        toast.success("Film ditambahkan!");
+      const res = await fetch("/api/admin/delete-karyawan", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: user.id, email: user.email }),
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        toast.error(data.error || "Gagal menghapus");
+        return;
       }
-      resetForm();
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        if ((err as { code?: string }).code === "permission-denied") {
-          toast.error("Gagal menyimpan: Akses ditolak!");
-        } else {
-          toast.error(`Gagal menyimpan: ${err.message}`);
-        }
-      } else {
-        toast.error("Gagal menyimpan: unknown error");
-      }
+      
+      toast.success(`User berhasil dihapus!`);
+      
+    } catch (err) {
+      console.error("deleteUser error:", err);
+      toast.error("Terjadi kesalahan");
+    } finally {
+      setDeletingId(null);
     }
   };
 
-  const handleEdit = (m: Movie) => {
-    setId(m.id);
-    setTitle(m.title);
-    setImage(m.image);
-    setMinute(m.minute);
-    setPrice(m.price);
-    setDriveUrl(m.drive_url);
-    setIsEdit(true);
+  // Edit user
+  const saveEdit = async (id: string) => {
+    if (!editData.full_name?.trim()) {
+      toast.error("Nama lengkap harus diisi");
+      return;
+    }
+
+    // Validasi: hanya super admin yang bisa mengubah role
+    const targetUser = users.find(u => u.id === id);
+    if (targetUser && editData.role && editData.role !== targetUser.role) {
+      if (!isSuperAdmin) {
+        toast.error("🔒 Hanya Super Admin yang dapat mengubah role user");
+        return;
+      }
+
+      // Tampilkan modal konfirmasi ubah role
+      setShowRoleChangeConfirm({
+        user: targetUser,
+        newRole: editData.role
+      });
+      return;
+    }
+
+    await proceedSaveEdit(id);
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm("Hapus film ini?")) return;
+  // Fungsi untuk melanjutkan save edit setelah konfirmasi role change
+  const proceedWithRoleChange = async () => {
+    if (!showRoleChangeConfirm) return;
+    
+    const { user, newRole } = showRoleChangeConfirm;
+    setShowRoleChangeConfirm(null);
+    setSavingEditId(user.id);
+    
     try {
-      await deleteDoc(doc(db, "movies", id));
-      toast.success("Film dihapus!");
-    } catch (err: unknown) {
-      if (err instanceof Error) toast.error(`Gagal menghapus: ${err.message}`);
-      else toast.error("Gagal menghapus: unknown error");
+      const res = await fetch("/api/admin/edit-karyawan", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          id: user.id, 
+          role: newRole,
+          full_name: editData.full_name || user.full_name,
+          position: editData.position || user.position
+        }),
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        toast.error(data.error || "Gagal menyimpan perubahan role");
+        return;
+      }
+      
+      toast.success("Perubahan role disimpan!");
+      setEditId(null);
+      setEditData({});
+      
+    } catch (err) {
+      console.error("saveEdit error:", err);
+      toast.error("Terjadi kesalahan");
+    } finally {
+      setSavingEditId(null);
     }
   };
 
-  const filteredMovies = movies.filter((m) =>
-    m.title.toLowerCase().includes(search.toLowerCase())
-  );
-  const totalPages = Math.ceil(filteredMovies.length / itemsPerPage);
-  const paginatedMovies = filteredMovies.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
+  // Fungsi untuk melanjutkan save edit tanpa perubahan role
+  const proceedSaveEdit = async (id: string) => {
+    setSavingEditId(id);
+    try {
+      const res = await fetch("/api/admin/edit-karyawan", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...editData }),
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        toast.error(data.error || "Gagal menyimpan");
+        return;
+      }
+      
+      toast.success(" Perubahan disimpan!");
+      setEditId(null);
+      setEditData({});
+      
+    } catch (err) {
+      console.error("saveEdit error:", err);
+      toast.error("Terjadi kesalahan");
+    } finally {
+      setSavingEditId(null);
+    }
+  };
 
-  // === RENDER ===
-  if (!user)
-    return (
-      <div className="flex flex-col items-center justify-center h-screen p-4">
-        <h1 className="text-2xl font-bold mb-4">Khusus Admin</h1>
+  // Pagination
+  const goToPage = (page: number) => {
+    const p = Math.max(1, Math.min(page, totalPages));
+    setCurrentPage(p);
+    currentPageRef.current = p;
+    fetchUsers(p, searchRef.current);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const renderPageNumbers = () => {
+    const maxButtons = 7;
+    const pages: (number | string)[] = [];
+    
+    if (totalPages <= maxButtons) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      const left = Math.max(1, currentPage - 2);
+      const right = Math.min(totalPages, currentPage + 2);
+      
+      if (left > 1) {
+        pages.push(1);
+        if (left > 2) pages.push("...");
+      }
+      
+      for (let i = left; i <= right; i++) pages.push(i);
+      
+      if (right < totalPages) {
+        if (right < totalPages - 1) pages.push("...");
+        pages.push(totalPages);
+      }
+    }
+    
+    return pages.map((p, idx) =>
+      typeof p === "number" ? (
         <button
-          onClick={handleLogin}
-          className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg"
+          key={p}
+          onClick={() => goToPage(p)}
+          className={`w-10 h-10 rounded-lg font-medium transition-colors ${
+            currentPage === p
+              ? "bg-[#A6FF00] text-gray-900 border-2 border-[#A6FF00]"
+              : "bg-white border-2 border-[#A6FF00]/30 text-gray-900 hover:bg-[#A6FF00]/20"
+          }`}
         >
-          Login with Google
+          {p}
         </button>
-        <Toaster />
-      </div>
+      ) : (
+        <div key={`dots-${idx}`} className="w-10 h-10 flex items-center justify-center text-gray-500">
+          {p}
+        </div>
+      )
     );
+  };
 
-  if (isAdmin === false)
-    return (
-      <div className="flex flex-col items-center justify-center h-screen p-4 text-center">
-        <h1 className="text-2xl font-bold">Akses Ditolak</h1>
-        <p className="text-gray-400 mb-4">Email kamu tidak terdaftar sebagai admin.</p>
-        <button
-          onClick={() => (window.location.href = "/")}
-          className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg"
-        >
-          Kembali ke Homepage
-        </button>
-        <Toaster />
-      </div>
-    );
+  const showPagination = total >= perPage;
 
-  if (isAdmin === null)
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <p className="text-center text-lg font-medium">Memeriksa akses admin...</p>
-        <Toaster />
-      </div>
-    );
+  // Helper function untuk mendapatkan badge role
+  const getRoleBadge = (role: string | null) => {
+    switch(role) {
+      case 'super_admin':
+        return (
+          <span className="px-2 py-1 rounded text-xs bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold flex items-center gap-1 w-fit">
+            <HiShieldCheck className="w-3 h-3" />
+            Super Admin
+          </span>
+        );
+      case 'admin':
+        return (
+          <span className="px-2 py-1 rounded text-xs bg-purple-100 text-purple-800 font-medium">
+            Admin
+          </span>
+        );
+      case 'karyawan':
+        return (
+          <span className="px-2 py-1 rounded text-xs bg-blue-100 text-blue-800">
+            Karyawan
+          </span>
+        );
+      default:
+        return <span className="px-2 py-1 rounded text-xs bg-gray-100 text-gray-800">-</span>;
+    }
+  };
+
+  // Helper function untuk mendapatkan nama role lengkap
+  const getRoleName = (role: string) => {
+    switch(role) {
+      case 'super_admin': return 'Super Admin';
+      case 'admin': return 'Admin';
+      case 'karyawan': return 'Karyawan';
+      default: return role;
+    }
+  };
+
+  // Gunakan useEffect untuk memastikan ToastContainer hanya dirender di client
+  const [isClient, setIsClient] = useState(false);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <Toaster />
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Admin Panel</h1>
+    <div className="bg-white min-h-screen text-gray-900 text-sm">
+      {isClient && (
+        <ToastContainer
+          position="top-right"
+          autoClose={3000}
+          hideProgressBar={false}
+          newestOnTop={true}
+          closeOnClick
+          rtl={false}
+          pauseOnFocusLoss
+          draggable
+          pauseOnHover
+          theme="light"
+        />
+      )}
+      
+      <div className="flex items-center gap-3 mb-4">
+        <h1 className="text-3xl font-bold">Selamat datang, {adminName}</h1>
+        {currentUserRole === 'super_admin' && (
+          <span className="px-3 py-1 rounded-lg text-sm bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold flex items-center gap-1.5 shadow-md">
+            <HiShieldCheck className="w-4 h-4" />
+            Super Admin
+          </span>
+        )}
+        {currentUserRole === 'admin' && (
+          <span className="px-3 py-1 rounded-lg text-sm bg-purple-100 text-purple-800 font-semibold flex items-center gap-1.5 border-2 border-purple-200">
+            Admin
+          </span>
+        )}
+      </div>
+
+      {/* Form tambah */}
+      <div className="mb-4 p-3 border rounded bg-gray-50">
+        <h2 className="font-semibold mb-2">Tambah User</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          <input
+            type="text"
+            placeholder="Full Name *"
+            value={newFullName}
+            onChange={(e) => setNewFullName(e.target.value)}
+            className="border p-2 rounded"
+          />
+          <input
+            type="email"
+            placeholder="Email *"
+            value={newEmail}
+            onChange={(e) => setNewEmail(e.target.value)}
+            className="border p-2 rounded"
+          />
+          
+          <div className="relative">
+            <input
+              type={showPassword ? "text" : "password"}
+              placeholder="Password *"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="w-full border p-2 rounded pr-10"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((s) => !s)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1"
+            >
+              {showPassword ? <HiEyeOff className="w-4 h-4" /> : <HiEye className="w-4 h-4" />}
+            </button>
+          </div>
+          
+          <input
+            type="text"
+            placeholder="Position"
+            value={newPosition}
+            onChange={(e) => setNewPosition(e.target.value)}
+            className="border p-2 rounded"
+          />
+          <input
+            type="date"
+            value={newBirthDate}
+            onChange={(e) => setNewBirthDate(e.target.value)}
+            className="border p-2 rounded"
+          />
+          <input
+            type="text"
+            placeholder="Address"
+            value={newAddress}
+            onChange={(e) => setNewAddress(e.target.value)}
+            className="border p-2 rounded"
+          />
+          
+          <button
+            onClick={addKaryawan}
+            disabled={addingUser}
+            className="bg-green-600 text-white p-2 rounded hover:bg-green-700 disabled:opacity-50"
+          >
+            {addingUser ? "Menambah..." : "Tambah"}
+          </button>
+        </div>
+      </div>
+
+      {/* Search */}
+      <div className="mb-4 flex gap-2">
+        <input
+          type="text"
+          placeholder="Cari nama, email, posisi..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="border p-2 rounded flex-1"
+        />
         <button
-          className="bg-red-600 px-4 py-2 rounded-lg hover:bg-red-700"
-          onClick={() => signOut(auth)}
+          onClick={() => setSearchQuery("")}
+          className="px-4 py-2 bg-gray-100 rounded hover:bg-gray-200"
         >
-          Logout
+          Clear
         </button>
       </div>
 
-      {/* FORM TAMBAH / EDIT */}
-      <div className="bg-zinc-900 p-4 rounded-xl shadow-lg mb-6">
-        <h2 className="text-xl font-semibold mb-3">{isEdit ? "Edit Film" : "Tambah Film"}</h2>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <input
-            type="text"
-            placeholder="Judul Film"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            required
-            className="w-full p-2 rounded bg-zinc-800 text-white"
-          />
-          <input
-            type="text"
-            placeholder="URL Gambar"
-            value={image}
-            onChange={(e) => setImage(e.target.value)}
-            required
-            className="w-full p-2 rounded bg-zinc-800 text-white"
-          />
-          <div className="grid grid-cols-2 gap-4">
-            <input
-              type="number"
-              placeholder="Durasi (menit)"
-              value={minute}
-              onChange={(e) => setMinute(Number(e.target.value))}
-              required
-              className="w-full p-2 rounded bg-zinc-800 text-white"
-            />
-            <input
-              type="number"
-              placeholder="Harga (Rp)"
-              value={price}
-              onChange={(e) => setPrice(Number(e.target.value))}
-              required
-              className="w-full p-2 rounded bg-zinc-800 text-white"
-            />
-          </div>
-          <input
-            type="text"
-            placeholder="Drive URL"
-            value={driveUrl}
-            onChange={(e) => setDriveUrl(e.target.value)}
-            required
-            className="w-full p-2 rounded bg-zinc-800 text-white"
-          />
-          <div className="flex gap-4">
-            <button type="submit" className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded font-semibold">
-              {isEdit ? "Simpan Perubahan" : "Tambah Film"}
-            </button>
-            {isEdit && (
-              <button
-                type="button"
-                onClick={resetForm}
-                className="flex-1 bg-gray-600 hover:bg-gray-700 py-2 rounded font-semibold"
-              >
-                Batal
-              </button>
+      {/* Table */}
+      <div className="overflow-x-auto">
+        <table className="min-w-full border border-gray-300 text-xs">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="px-2 py-1 border">Nama</th>
+              <th className="px-2 py-1 border">Email</th>
+              <th className="px-2 py-1 border">Role</th>
+              <th className="px-2 py-1 border">Posisi</th>
+              <th className="px-2 py-1 border">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="text-center py-6 text-gray-600">
+                  {searchQuery ? "Tidak ditemukan" : "Tidak ada data"}
+                </td>
+              </tr>
+            ) : (
+              users.map((user) => (
+                <tr key={user.id} className="hover:bg-gray-50">
+                  {editId === user.id ? (
+                    <>
+                      <td className="px-2 py-1 border">
+                        <input
+                          value={editData.full_name || ""}
+                          onChange={(e) => setEditData({ ...editData, full_name: e.target.value })}
+                          className="border p-1 rounded w-full"
+                        />
+                      </td>
+                      <td className="px-2 py-1 border">{user.email}</td>
+                      <td className="px-2 py-1 border">
+                        <select
+                          value={editData.role || user.role || ""}
+                          onChange={(e) => setEditData({ ...editData, role: e.target.value })}
+                          className="border p-1 rounded w-full"
+                          disabled={!isSuperAdmin}
+                          title={!isSuperAdmin ? "Hanya Super Admin yang dapat mengubah role" : ""}
+                        >
+                          <option value="super_admin">Super Admin</option>
+                          <option value="admin">Admin</option>
+                          <option value="karyawan">Karyawan</option>
+                        </select>
+                        {!isSuperAdmin && (
+                          <p className="text-xs text-red-600 mt-1">🔒 Hanya Super Admin</p>
+                        )}
+                      </td>
+                      <td className="px-2 py-1 border">
+                        <input
+                          value={editData.position || ""}
+                          onChange={(e) => setEditData({ ...editData, position: e.target.value })}
+                          className="border p-1 rounded w-full"
+                        />
+                      </td>
+                      <td className="px-2 py-1 border flex gap-1">
+                        <button
+                          onClick={() => saveEdit(user.id)}
+                          disabled={savingEditId === user.id}
+                          className="bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {savingEditId === user.id ? "..." : "Simpan"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditId(null);
+                            setEditData({});
+                          }}
+                          className="bg-gray-500 text-white px-2 py-1 rounded hover:bg-gray-600"
+                        >
+                          Batal
+                        </button>
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="px-2 py-1 border">{user.full_name}</td>
+                      <td className="px-2 py-1 border">{user.email}</td>
+                      <td className="px-2 py-1 border">
+                        {getRoleBadge(user.role)}
+                      </td>
+                      <td className="px-2 py-1 border">{user.position}</td>
+                      <td className="px-2 py-1 border flex gap-1">
+                        <button
+                          onClick={() => {
+                            setEditId(user.id);
+                            setEditData(user);
+                          }}
+                          className="bg-yellow-500 text-white px-2 py-1 rounded hover:bg-yellow-600"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => confirmDelete(user)}
+                          disabled={
+                            deletingId === user.id || 
+                            user.id === currentUserId || 
+                            user.role === 'admin' || 
+                            user.role === 'super_admin'
+                          }
+                          className="bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={
+                            user.id === currentUserId 
+                              ? "Tidak dapat menghapus akun sendiri" 
+                              : (user.role === 'admin' || user.role === 'super_admin')
+                              ? "Hubungi Super Admin untuk mengubah role terlebih dahulu"
+                              : "Hapus user"
+                          }
+                        >
+                          {deletingId === user.id ? "..." : "Hapus"}
+                        </button>
+                      </td>
+                    </>
+                  )}
+                </tr>
+              ))
             )}
-          </div>
-        </form>
+          </tbody>
+        </table>
       </div>
 
-      {/* SEARCH */}
-      <input
-        type="text"
-        placeholder="Cari film..."
-        value={search}
-        onChange={(e: ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
-        className="w-full p-2 rounded mb-4 bg-zinc-800 text-white"
-      />
+      {/* Pagination */}
+      {showPagination && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4">
+          <div className="flex gap-2">
+            <button
+              onClick={() => goToPage(currentPage - 1)}
+              disabled={currentPage === 1}
+              className="px-3 py-1 rounded bg-white border border-[#A6FF00] hover:bg-[#A6FF00]/20 disabled:opacity-50"
+            >
+              ‹ Prev
+            </button>
+            <button
+              onClick={() => goToPage(currentPage + 1)}
+              disabled={currentPage === totalPages}
+              className="px-3 py-1 rounded bg-white border border-[#A6FF00] hover:bg-[#A6FF00]/20 disabled:opacity-50"
+            >
+              Next ›
+            </button>
+          </div>
 
-      {/* LIST MOVIE */}
-      {loadingMovies ? (
-        <p>Loading...</p>
-      ) : paginatedMovies.length === 0 ? (
-        <p className="text-gray-400">Belum ada film.</p>
-      ) : (
-        <div className="space-y-4">
-          {paginatedMovies.map((m) => (
-            <div key={m.id} className="bg-zinc-900 p-4 rounded-xl flex items-center justify-between">
-              <div>
-                <p className="font-bold text-lg">{m.title}</p>
-                <p className="text-sm text-gray-400">
-                  {m.minute} min • Rp{m.price}
-                </p>
-                <p className="text-xs text-gray-500 break-all">Drive: {m.drive_url}</p>
-              </div>
-              <div className="flex gap-2">
-                <button onClick={() => handleEdit(m)} className="px-4 py-1 bg-blue-600 rounded hover:bg-blue-700">
-                  Edit
-                </button>
-                <button onClick={() => handleDelete(m.id)} className="px-4 py-1 bg-red-600 rounded hover:bg-red-700">
-                  Hapus
-                </button>
-              </div>
-            </div>
-          ))}
+          <div className="flex gap-2">{renderPageNumbers()}</div>
+
+          <div className="text-sm text-gray-600">
+            Halaman {currentPage} dari {totalPages} • Total {total} user
+          </div>
         </div>
       )}
 
-      {/* PAGINATION */}
-      {totalPages > 1 && (
-        <div className="flex justify-center gap-2 mt-4">
-          {Array.from({ length: totalPages }, (_, i) => (
-            <button
-              key={i + 1}
-              onClick={() => setCurrentPage(i + 1)}
-              className={`px-3 py-1 rounded ${currentPage === i + 1 ? "bg-blue-600 text-white" : "bg-zinc-800 text-gray-200"}`}
-            >
-              {i + 1}
-            </button>
-          ))}
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4"
+          onClick={() => setShowDeleteConfirm(null)}
+        >
+          <div
+            className="bg-white rounded-2xl p-6 w-full max-w-sm border-2 border-red-300 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Hapus User</h3>
+            <p className="text-gray-600 mb-6">
+              Apakah Anda yakin ingin menghapus user <strong>{showDeleteConfirm.full_name || showDeleteConfirm.email}</strong>?
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowDeleteConfirm(null)}
+                className="flex-1 px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-900 rounded-lg transition-colors"
+              >
+                Batal
+              </button>
+              <button
+                onClick={() => deleteUser(showDeleteConfirm)}
+                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+              >
+                Hapus
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Role Change Confirmation Modal */}
+      {showRoleChangeConfirm && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4"
+          onClick={() => setShowRoleChangeConfirm(null)}
+        >
+          <div
+            className="bg-white rounded-2xl p-6 w-full max-w-sm border-2 border-orange-300 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center">
+                <HiShieldCheck className="w-5 h-5 text-orange-600" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900">Konfirmasi Perubahan Role</h3>
+            </div>
+            
+            <p className="text-gray-600 mb-4">
+              Anda akan mengubah role user:
+            </p>
+            
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-medium">User:</span>
+                <span className="font-semibold">{showRoleChangeConfirm.user.full_name || showRoleChangeConfirm.user.email}</span>
+              </div>
+              
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-medium">Role saat ini:</span>
+                <span className={`px-2 py-1 rounded text-xs ${
+                  showRoleChangeConfirm.user.role === 'super_admin' 
+                    ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white' 
+                    : showRoleChangeConfirm.user.role === 'admin'
+                    ? 'bg-purple-100 text-purple-800'
+                    : 'bg-blue-100 text-blue-800'
+                }`}>
+                  {getRoleName(showRoleChangeConfirm.user.role || '')}
+                </span>
+              </div>
+              
+              <div className="flex items-center justify-between">
+                <span className="font-medium">Role baru:</span>
+                <span className={`px-2 py-1 rounded text-xs ${
+                  showRoleChangeConfirm.newRole === 'super_admin' 
+                    ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white' 
+                    : showRoleChangeConfirm.newRole === 'admin'
+                    ? 'bg-purple-100 text-purple-800'
+                    : 'bg-blue-100 text-blue-800'
+                }`}>
+                  {getRoleName(showRoleChangeConfirm.newRole)}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-sm text-orange-600 bg-orange-50 p-3 rounded-lg mb-6">
+              ⚠️ Perubahan role akan mempengaruhi akses dan hak akses user di sistem.
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowRoleChangeConfirm(null)}
+                className="flex-1 px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-900 rounded-lg transition-colors"
+              >
+                Batal
+              </button>
+              <button
+                onClick={proceedWithRoleChange}
+                disabled={savingEditId === showRoleChangeConfirm.user.id}
+                className="flex-1 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingEditId === showRoleChangeConfirm.user.id ? "Menyimpan..." : "Ya, Ubah Role"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

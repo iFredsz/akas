@@ -24,15 +24,13 @@ Official company profile website for **CV Akas Brother Consultant**.
 - Authentication & protected routes
 
 
-## 🛠️ Getting Started (Development)
+## 🛠️ Getting Started
 
-Install dependencies:
+```bash
 npm install
-
-Run Development:
 npm run dev
 
-.env
+dotenv
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
